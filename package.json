@@ -5,7 +5,34 @@
     "generate-events": "tsx scripts/generate-events.ts"
   },
   "devDependencies": {
+    "@nestjs/testing": "^11.1.16",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^25.4.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@fastify/sensible": "^6.0.4",
+    "@nestjs/cache-manager": "^3.1.0",
+    "@nestjs/common": "^11.1.16",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/core": "^11.1.16",
+    "@nestjs/microservices": "^11.1.16",
+    "@nestjs/platform-fastify": "^11.1.16",
+    "@nestjs/schedule": "^6.1.1",
+    "@nestjs/swagger": "^11.2.6",
+    "@nestjs/typeorm": "^11.0.0",
+    "cache-manager": "^7.2.8",
+    "cache-manager-redis-store": "^3.0.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "ioredis": "^5.10.0",
+    "kafkajs": "^2.2.4",
+    "pg": "^8.20.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "typeorm": "^0.3.28"
   }
 }

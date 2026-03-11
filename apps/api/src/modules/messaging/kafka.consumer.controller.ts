@@ -4,54 +4,90 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { IntegrationEvent, EventStatus } from '../events/entities/event.entity';
 import { KafkaProducerService } from './producers/kafka.producer';
+import { IntegrationService } from '../integrations/integration.service';
+import { CacheService } from '../cache/cache.service';
 
+/**
+ * Controller responsável por ouvir os eventos do Kafka de forma assíncrona.
+ * Implementa resiliência através de Idempotência, Exponential Backoff e DLQ
+ * protegendo o sistema de duplicações e sobrecargas no webhook externo.
+ */
 @Controller()
 export class KafkaConsumerController {
   private readonly logger = new Logger(KafkaConsumerController.name);
-  private readonly MOCK_URL = process.env.MOCK_INTEGRATIONS_URL || 'http://mock-integrations:4000';
 
   constructor(
     @InjectRepository(IntegrationEvent)
     private readonly eventsRepository: Repository<IntegrationEvent>,
     private readonly kafkaProducer: KafkaProducerService,
+    private readonly integrationService: IntegrationService,
+    private readonly cacheService: CacheService,
   ) {}
 
+  /**
+   * Consome o tópico onde a API postou as mensagens.
+   * Evita "Double Processing" usando Redis (Cache-Aside pattern).
+   */
   @EventPattern('events.processing')
-  async handleEventProcessing(@Payload() message: any) {
-    const event = typeof message === 'string' ? JSON.parse(message) : message;
-    this.logger.log(`[WORKER] Processando evento: ${event.id}`);
+  async handleEventProcessing(@Payload() event: any) {
+    if (!event || !event.id) {
+      this.logger.error('[WORKER] Recebido evento inválido ou malformado do Kafka.');
+      return;
+    }
 
-    const maxRetries = 3;
+    const lockKey = `processing_lock:${event.id}`;
+    
+    // Idempotência no Worker: Evita processar se já foi concluído ou se já está na DLQ
+    const status = await this.cacheService.get(lockKey);
+    if (status === 'PROCESSED' || status === 'DLQ') return;
+
+    this.logger.log(`[WORKER] Iniciando processamento: ${event.id}`);
+
+    const maxRetries = 5; 
     let attempt = 0;
-    let success = false;
 
-    while (attempt < maxRetries && !success) {
+    while (attempt < maxRetries) {
       try {
         attempt++;
-        const response = await fetch(`${this.MOCK_URL}/billing`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(event.payload),
+        await this.integrationService.processBilling(event.payload);
+
+        await this.eventsRepository.update({ id: event.id }, { 
+          status: EventStatus.PROCESSED, 
+          retryCount: attempt - 1,
+          processedAt: new Date()
         });
-
-        if (!response.ok) throw new Error(`Status ${response.status}`);
-
-        success = true;
-        await this.eventsRepository.update(event.id, { status: EventStatus.PROCESSED, retryCount: attempt });
-        this.logger.log(`[WORKER] ✅ Sucesso! Evento ${event.id}`);
+        
+        await this.cacheService.set(lockKey, 'PROCESSED', 86400); // 24h
+        this.logger.log(`[WORKER] Evento ${event.id} processado com sucesso.`);
+        return;
 
       } catch (error) {
-        this.logger.warn(`[WORKER] ⚠️ Falha na tentativa ${attempt} do evento ${event.id}`);
+        this.logger.warn(`[WORKER] Tentativa ${attempt} falhou para ${event.id}: ${error.message}`);
         
-        if (attempt < maxRetries) {
-          const waitTime = Math.pow(2, attempt) * 1000; // 2s, 4s...
-          await new Promise(res => setTimeout(res, waitTime));
-        } else {
-          this.logger.error(`[WORKER] ❌ Evento ${event.id} exauriu tentativas. Movendo para DLQ.`);
-          await this.eventsRepository.update(event.id, { status: EventStatus.DLQ, retryCount: attempt });
-          await this.kafkaProducer.produce('events.dlq', { event_id: event.id, error: error.message });
+        if (attempt >= maxRetries) {
+          await this.moveToDLQ(event, attempt, error.message);
+          break;
         }
+        
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise(res => setTimeout(res, delay));
       }
     }
+  }
+
+  /**
+   * Move o evento rejeitado para outro tópico para proteção do ecossistema principal.
+   */
+  private async moveToDLQ(event: any, attempts: number, error: string) {
+    if (!event || !event.id) return;
+
+    this.logger.error(`[WORKER] Evento ${event.id} esgotou retries e foi movido para DLQ.`);
+    await this.eventsRepository.update({ id: event.id }, { 
+      status: EventStatus.DLQ, 
+      retryCount: attempts 
+    });
+    
+    await this.cacheService.set(`processing_lock:${event.id}`, 'DLQ', 86400); // Trava como DLQ por 24h
+    await this.kafkaProducer.produce('events.dlq', { event_id: event.id, error });
   }
 }

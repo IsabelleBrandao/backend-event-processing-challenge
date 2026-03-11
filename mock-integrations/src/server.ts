@@ -28,6 +28,15 @@ async function handleIntegration(
   reply: FastifyReply,
   service: string,
 ): Promise<void> {
+  const body = request.body as any;
+  
+  // Mecanismo de "Fault Injection" para validação determinística da Dead Letter Queue (DLQ)
+  if (body?.ref?.startsWith('fault-injection-fail-')) {
+    request.log.error({ service, ref: body.ref }, 'Synthetic error detected - Validating DLQ circuit');
+    await reply.code(500).send({ error: 'Synthetic Fault Injection', service });
+    return;
+  }
+
   await randomDelay(MAX_LATENCY_MS);
 
   if (shouldRateLimit()) {

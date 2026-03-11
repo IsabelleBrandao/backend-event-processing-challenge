@@ -1,190 +1,116 @@
-# Backend Event Processor Challenge
+# Nexly Group - Backend Event Processing Challenge
 
-A base repository for the Nexly backend engineering technical challenge.
+Serviço de alta performance desenvolvido para ingestão, persistência e processamento assíncrono de eventos, garantindo **idempotência**, **resiliência** e **observabilidade**.
 
-> **Candidates**: fork this repository and implement the challenge described in [`docs/challenge.md`](./docs/challenge.md).
-
----
-
-## Stack
-
-| Layer        | Technology               |
-|--------------|--------------------------|
-| Runtime      | Node.js 22               |
-| Language     | TypeScript (strict)      |
-| Framework    | Fastify 4                |
-| Database     | PostgreSQL 16            |
-| Container    | Docker + Docker Compose  |
+O projeto resolve desafios de sistemas distribuídos como processamento de grande volumetria, falhas em integrações externas e garantia de processamento único (deduplicação).
 
 ---
 
-## Project Structure
+## Diferenciais Implementados
 
-```
-.
-├── apps/
-│   └── api/                    # Fastify API skeleton
-│       └── src/
-│           ├── server.ts       # Entry point
-│           ├── app.ts          # Fastify instance and plugin registration
-│           └── routes/
-│               └── health.ts   # GET /health (implemented)
-│
-├── mock-integrations/          # Simulates unstable external services
-│   └── src/
-│       └── server.ts           # POST /billing, /crm, /notifications
-│
-├── scripts/
-│   └── generate-events.ts      # Sends 10k synthetic events to the API
-│
-├── infra/
-│   └── postgres/
-│       └── init.sql            # Initial DB schema
-│
-├── docs/
-│   └── challenge.md            # Challenge instructions
-│
-└── docker-compose.yml
-```
+Além dos requisitos obrigatórios, este projeto inclui:
+
+* **Rate Limiting:** Proteção contra ataques de força bruta/DDoS (limite de requisições por IP).
+* **Dead Letter Queue (DLQ):** Mensagens do Kafka que falham no processamento não são perdidas, garantindo observabilidade.
+* **Deadlock Prevention:** Ordenação determinística de recursos antes do travamento no banco.
+* **Idempotência:** Garantia via Redis e Database (Unique Constraint) de que um evento nunca seja processado mais de uma vez.
+* **Swagger/OpenAPI:** Documentação automática da API.
+* **Testes E2E:** Validação de fluxos completos de ponta a ponta.
 
 ---
 
-## Getting Started
+## Arquitetura e Decisões Técnicas
 
-### Prerequisites
+O sistema adota uma **Arquitetura Híbrida em Camadas**, permitindo que a mesma instância atue como API HTTP de alta performance e como Worker de processamento assíncrono (Consumer).
 
-- Docker and Docker Compose installed
-- Node.js 22+ (for running scripts locally)
-
-### Run the environment
-
-```bash
-cp .env.example .env
-docker compose up
-```
-
-This starts:
-
-| Service            | Port  | Description                      |
-|--------------------|-------|----------------------------------|
-| `api`              | 3000  | Fastify API                      |
-| `mock-integrations`| 4000  | Unstable external services mock  |
-| `postgres`         | 5432  | PostgreSQL database              |
-
-### Verify everything is running
-
-```bash
-curl http://localhost:3000/health
-# {"status":"ok"}
-
-curl http://localhost:4000/health
-# {"status":"ok"}
-```
+| Tecnologia | Função | Justificativa |
+| :--- | :--- | :--- |
+| **NestJS + Fastify** | Backend Framework | Uso do **Fastify** em vez do Express para garantir o menor overhead possível e máxima vazão de requisições por segundo. |
+| **Arquitetura Modular** | Estrutura de Código | Organização em módulos encapsulados (Events, Messaging, Cache), facilitando a manutenção e escalabilidade. |
+| **PostgreSQL** | Banco de Dados | Transações ACID e suporte a **Pessimistic Locking** (`SELECT ... FOR UPDATE`), essencial para evitar condições de corrida (Race Conditions). |
+| **Redis** | Cache Distribuído | Implementação de *Cache-Aside* para idempotência instantânea, reduzindo latência e IO de banco de dados. |
+| **Apache Kafka** | Mensageria | Processamento assíncrono resiliente, garantindo o desacoplamento entre a recepção do evento e sua integração externa. |
+| **Docker** | Infraestrutura | Padronização do ambiente e orquestração de serviços complexos (Kafka, DB, Redis) em um único comando. |
 
 ---
 
-## Mock Integrations
+## Diferenciais da Implantação
 
-The `mock-integrations` service simulates three external systems: **billing**, **crm**, and **notifications**.
+### 1. Exponential Backoff (Retentativa Inteligente)
+**Cenário:** Integrações externas instáveis podem falhar.
+**Solução:** Implementado atraso de recuo exponencial garantindo que a carga do ecossistema não seja afetada, com saltos de 2s, 4s, 8s, 16s e 32s.
 
-All three endpoints share the same behavior:
+### 2. Dead Letter Queue (DLQ)
+**Cenário:** O evento não deve travar toda a fila do Kafka, mas também não pode sumir.
+**Solução:** Após o limite de retentativas (5), enviamos o evento a um tópico `events.dlq` exclusivo, registrando o problema para análise separada.
 
-| Behavior          | Probability | Description                            |
-|-------------------|-------------|----------------------------------------|
-| Success           | ~77%        | Returns `200 OK` after a random delay  |
-| Rate limited      | ~8%         | Returns `429` with `Retry-After: 5`    |
-| Server error      | ~15%        | Returns `500 Internal Server Error`    |
-| Latency           | Always      | Random delay between 0–3 seconds       |
-
-Your implementation must handle all of these cases.
-
-### Endpoints
-
-```
-POST http://localhost:4000/billing
-POST http://localhost:4000/crm
-POST http://localhost:4000/notifications
-```
+### 3. Padrão Cache-Aside de Idempotência
+**Desafio:** O mesmo evento sendo submetido múltiplas vezes.
+**Solução:** Garantia via Redis (para throughput em memória rápido) e via Database (Constraint de Unique) para que o processamento do evento seja executado apenas uma vez.
 
 ---
 
-## Event Generator
+## Como Executar
 
-Located at `scripts/generate-events.ts`, this script sends synthetic events to the API for load testing.
+### Pré-requisitos
+* Docker e Docker Compose instalados.
 
-### Setup
+### Passo a Passo
 
-Install root dependencies once:
+1.  **Clone o repositório:**
+    ```bash
+    git clone https://github.com/IsabelleBrandao/backend-event-processing-challenge.git
+    cd backend-event-processing-challenge
+    ```
 
-```bash
-npm install
-```
+2.  **Suba o ambiente:**
+    ```bash
+    docker-compose up --build
+    ```
 
-### Usage
-
-```bash
-# Default: 10,000 events, 20 concurrent
-npm run generate-events
-
-# Custom count
-npm run generate-events -- --count 1000
-
-# Custom count and concurrency
-npm run generate-events -- --count 5000 --concurrency 50
-```
-
-### Configuration
-
-CLI arguments take priority over environment variables, which take priority over defaults.
-
-| CLI argument    | Env variable   | Default | Description                  |
-|-----------------|----------------|---------|------------------------------|
-| `--count`       | `TOTAL_EVENTS` | `10000` | Number of events to send     |
-| `--concurrency` | `CONCURRENCY`  | `20`    | Simultaneous requests        |
-| —               | `API_URL`      | `http://localhost:3000` | Base URL of the API |
+3.  **Aguarde a inicialização:**
+    O sistema estará pronto quando a API conectar aos Brokers.
+    *   **API:** `http://localhost:3000`
+    *   **Swagger:** `http://localhost:3000/api`
 
 ---
 
-## Challenge
+## Guia de Validação do Desafio
 
-Read [`docs/challenge.md`](./docs/challenge.md) for the full requirements.
+Para facilitar a avaliação da robustez do sistema, siga este roteiro de testes:
 
-In summary, you must implement:
+### 1. Inicialização do Ambiente
+Certifique-se de que os containers estão rodando conforme as instruções na seção "Como Executar".
+Aguarde até visualizar no log da API a mensagem: `[KafkaConsumerController] [WORKER] Consumer has joined the group`.
 
-1. `POST /events` — event ingestion endpoint
-2. An asynchronous event processor
-3. Retry logic with exponential backoff
-4. Dead Letter Queue (DLQ) for unprocessable events
-5. `GET /metrics` and `GET /dlq` endpoints
+### 2. Fluxo Feliz (Ingestão e Processamento)
+1.  Acesse o Swagger em: `http://localhost:3000/api`.
+2.  No endpoint `POST /events`, utilize o payload de exemplo disponível na documentação ou copie o JSON abaixo.
+3.  Clique em **Execute**. A resposta deve ser `202 Accepted`.
+4.  Observe os logs do terminal: você verá o evento sendo persistido e, logo em seguida, o Worker processando-o com sucesso.
 
----
+### 3. Validação de Idempotência
+1.  Com o mesmo `event_id` do passo anterior, clique em **Execute** novamente.
+2.  A resposta continuará sendo `202 Accepted` para o cliente (mantendo a consistência da interface), mas nos logs da API você verá o aviso: `[API] Evento duplicado ignorado (Cache)`.
+3.  Isso valida que o sistema não reprocessa eventos idênticos, economizando recursos de infraestrutura.
 
-## Development
+### 4. Teste de Carga e Resiliência (Volume)
+O script de volumetria simula o envio massivo de eventos, incluindo falhas sintéticas para validar a DLQ.
+1.  Em um terminal separado, execute:
+    ```bash
+    npm run generate-events -- --count 500
+    ```
+2.  Observe a API aceitando as requisições em alta velocidade enquanto o Worker processa as mensagens de forma assíncrona em background.
 
-### Running the API locally (without Docker)
+> **Nota Técnica:** O script está configurado para injetar **2% de falhas sintéticas** (Fault Injection). Portanto, ao final de um teste de 500 eventos, é esperado que aproximadamente **10 eventos** terminem com status `DLQ`, permitindo a validação completa do circuito de erro e dos endpoints de auditoria.
 
-```bash
-cd apps/api
-npm install
-cp ../../.env.example .env
-npm run dev
-```
-
-### Running mock integrations locally
-
-```bash
-cd mock-integrations
-npm install
-npm run dev
-```
-
-### Type checking
-
-```bash
-cd apps/api && npm run typecheck
-cd mock-integrations && npm run typecheck
-```
+### 5. Observabilidade e Métricas
+Após o término do script de carga, acesse os endpoints de monitoramento:
+*   **Métricas de Status:** `http://localhost:3000/events/metrics`
+    *   Verifique o agrupamento por status (`PROCESSED`, `DLQ`).
+*   **Auditoria de DLQ:** `http://localhost:3000/events/dlq`
+    *   Visualize os eventos que excederam as 5 tentativas de processamento (injetados propositalmente pelo script para validação do circuito de erro).
 
 ---
 
-*Nexly Engineering Team*
+**Desenvolvido por Isabelle Brandão**

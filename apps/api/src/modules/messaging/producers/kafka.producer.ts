@@ -28,7 +28,7 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     await this.kafkaClient.close();
   }
-  
+
   async produce(topic: string, message: any) {
     try {
       await lastValueFrom(this.kafkaClient.emit(topic, message));

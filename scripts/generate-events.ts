@@ -64,18 +64,32 @@ function randomItem<T>(items: readonly T[]): T {
   return items[Math.floor(Math.random() * items.length)] as T;
 }
 
+
+let lastEvent: any = null;
+
 function buildEvent(): EventPayload {
-  return {
+
+  if (lastEvent && Math.random() < 0.10) {
+    return lastEvent; 
+  }
+
+  // 2% dos eventos são marcados para "Fault Injection" para validar o fluxo de DLQ de forma determinística
+  const shouldInjectFault = Math.random() < 0.02; 
+
+  const newEvent = {
     event_id: randomUUID(),
     tenant_id: randomItem(TENANT_IDS),
     type: randomItem(EVENT_TYPES),
     payload: {
-      ref: randomUUID(),
+      ref: shouldInjectFault ? `fault-injection-fail-${randomUUID()}` : randomUUID(),
       value: parseFloat((Math.random() * 1000).toFixed(2)),
       currency: 'BRL',
       generatedAt: new Date().toISOString(),
     },
   };
+
+  lastEvent = newEvent;
+  return newEvent;
 }
 
 async function sendEvent(event: EventPayload): Promise<{ ok: boolean; status: number }> {

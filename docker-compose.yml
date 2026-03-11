@@ -7,28 +7,23 @@ services:
     environment:
       POSTGRES_DB: events_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: root
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 5s
       retries: 5
 
   zookeeper:
-    image: confluentinc/cp-zookeeper:latest
+    image: confluentinc/cp-zookeeper:7.5.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
 
   kafka:
-    image: confluentinc/cp-kafka:latest
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
       - zookeeper
     ports:
@@ -40,6 +35,11 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "localhost", "29092" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:alpine
@@ -55,27 +55,20 @@ services:
       - "3000:3000"
     environment:
       NODE_ENV: development
-      API_PORT: 3000
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/events_db
-      MOCK_INTEGRATIONS_URL: http://mock-integrations:4000
-      KAFKA_BROKER: kafka:29092
+      DATABASE_URL: postgresql://postgres:root@postgres:5432/events_db
+      KAFKA_BROKERS: kafka:29092
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      DB_SYNC: "true"
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
-        condition: service_started
-      redis:
-        condition: service_started
+        condition: service_healthy
 
   mock-integrations:
     build:
       context: ./mock-integrations
       dockerfile: Dockerfile
-    restart: unless-stopped
     ports:
       - "4000:4000"
-
-volumes:
-  postgres_data:

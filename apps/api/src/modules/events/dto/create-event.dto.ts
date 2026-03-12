@@ -1,4 +1,4 @@
-import { IsString, IsUUID, IsObject, IsNotEmpty, IsNumber, IsISO8601 } from 'class-validator';
+import { IsString, IsUUID, IsObject, IsNotEmpty, IsNumber, IsISO8601, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -9,8 +9,8 @@ export class EcommercePayloadDto {
   ref!: string;
 
   @ApiProperty({ example: 250.50, description: 'Valor monetário do evento' })
-  @IsNumber()
   @IsNotEmpty()
+  @IsNumber()
   value!: number;
 
   @ApiProperty({ example: 'BRL', description: 'Moeda da transação' })
@@ -52,6 +52,7 @@ export class CreateEventDto {
   })
   @IsObject()
   @IsNotEmpty()
+  @ValidateNested()
   @Type(() => EcommercePayloadDto)
   payload!: EcommercePayloadDto;
 }

@@ -39,16 +39,38 @@ describe('CacheService', () => {
     expect(mockCacheManager.get).toHaveBeenCalledWith('test-key');
   });
 
-  it('deve salvar valor no cache', async () => {
+  it('deve salvar valor no cache com conversão de TTL para milissegundos', async () => {
     await service.set('test-key', 'value', 100);
 
-    expect(mockCacheManager.set).toHaveBeenCalledWith('test-key', 'value', 100);
+    expect(mockCacheManager.set).toHaveBeenCalledWith('test-key', 'value', 100000); // 100 * 1000
   });
 
   it('deve deletar chave do cache', async () => {
     await service.del('test-key');
 
     expect(mockCacheManager.del).toHaveBeenCalledWith('test-key');
+  });
+
+  describe('setNX', () => {
+    it('deve retornar true se conseguir adquirir o lock usando store nativo', async () => {
+      mockCacheManager.store.client = {
+        set: jest.fn().mockResolvedValue('OK'),
+      };
+
+      const result = await service.setNX('lock', 'val', 10);
+
+      expect(result).toBe(true);
+      expect(mockCacheManager.store.client.set).toHaveBeenCalledWith('lock', 'val', 'EX', 10, 'NX');
+    });
+
+    it('deve retornar false se o lock ja existir usando fallback', async () => {
+      mockCacheManager.get.mockResolvedValue('existing');
+
+      const result = await service.setNX('lock', 'val', 10);
+
+      expect(result).toBe(false);
+      expect(mockCacheManager.set).not.toHaveBeenCalled();
+    });
   });
 
   it('deve deletar chaves por padrão', async () => {

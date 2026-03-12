@@ -16,6 +16,7 @@ describe('KafkaConsumerController', () => {
   beforeEach(async () => {
     mockRepository = {
       update: jest.fn().mockResolvedValue(true),
+      findOne: jest.fn(),
     };
 
     mockKafkaProducer = {
@@ -29,6 +30,7 @@ describe('KafkaConsumerController', () => {
     mockCacheService = {
       get: jest.fn(),
       set: jest.fn(),
+      setNX: jest.fn().mockResolvedValue(true),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -58,6 +60,7 @@ describe('KafkaConsumerController', () => {
 
   it('deve processar o evento com sucesso logo na primeira tentativa', async () => {
     mockCacheService.get.mockResolvedValue(null);
+    mockRepository.findOne.mockResolvedValue({ id: 'evt-1', status: EventStatus.PENDING });
     mockIntegrationService.processBilling.mockResolvedValue(true);
 
     const event = { id: 'evt-1', payload: {} };
@@ -76,6 +79,7 @@ describe('KafkaConsumerController', () => {
     jest.spyOn(global, 'setTimeout').mockImplementation((cb: any) => cb());
     
     mockCacheService.get.mockResolvedValue(null);
+    mockRepository.findOne.mockResolvedValue({ id: 'evt-dlq', status: EventStatus.PENDING });
     mockIntegrationService.processBilling.mockRejectedValue(new Error('API Fora'));
 
     const event = { id: 'evt-dlq', payload: {} };
@@ -90,6 +94,8 @@ describe('KafkaConsumerController', () => {
     expect(mockKafkaProducer.produce).toHaveBeenCalledWith('events.dlq', {
       event_id: 'evt-dlq',
       error: 'API Fora',
+      attempts: 5,
+      failedAt: expect.any(Date),
     });
   });
 });

@@ -6,7 +6,7 @@ import { Cache } from 'cache-manager';
 export class CacheService {
   private readonly logger = new Logger(CacheService.name);
 
-  constructor(@Inject(CACHE_MANAGER) private cacheManager: Cache) {}
+  constructor(@Inject(CACHE_MANAGER) private cacheManager: Cache) { }
 
   async get<T>(key: string): Promise<T | undefined> {
     try {
@@ -19,9 +19,36 @@ export class CacheService {
 
   async set(key: string, value: any, ttlSeconds = 600): Promise<void> {
     try {
-      await this.cacheManager.set(key, value, ttlSeconds);
+      // A biblioteca usa milissegundos, por isso multiplicamos por 1000
+      await this.cacheManager.set(key, value, ttlSeconds * 1000);
     } catch (error) {
       this.logger.error(`Erro ao salvar cache ${key}`, error);
+    }
+  }
+
+  /**
+   * Tenta salvar apenas se a chave não existir. 
+   * Usado para garantir que o mesmo evento não seja processado duas vezes ao mesmo tempo.
+   */
+  async setNX(key: string, value: any, ttlSeconds = 600): Promise<boolean> {
+    try {
+      const store = (this.cacheManager as any).store;
+
+      // Se estivermos usando Redis, usamos o comando próprio dele que é mais seguro
+      if (store?.client?.set) {
+        const result = await store.client.set(key, value, 'EX', ttlSeconds, 'NX');
+        return result === 'OK';
+      }
+
+      // Se não for Redis, verificamos manualmente se a chave já existe
+      const existing = await this.get(key);
+      if (existing) return false;
+
+      await this.set(key, value, ttlSeconds);
+      return true;
+    } catch (error) {
+      this.logger.error(`Erro ao executar setNX na chave ${key}`, error);
+      return false;
     }
   }
 
@@ -37,15 +64,12 @@ export class CacheService {
     try {
       const store = (this.cacheManager as any).store;
 
+      // Nem todo banco de cache aceita apagar vários de uma vez, por isso checamos antes
       if (store && typeof store.keys === 'function') {
         const keys = await store.keys(pattern);
-        if (keys && keys.length > 0) {
+        if (keys?.length > 0) {
           await store.del(keys);
         }
-      } else {
-        this.logger.warn(
-          `O store de cache atual não suporta a operação 'keys' ou não foi encontrado.`,
-        );
       }
     } catch (error) {
       this.logger.error(`Erro ao deletar padrão ${pattern}`, error);

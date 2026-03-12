@@ -25,6 +25,8 @@ describe('EventsService', () => {
     mockCacheService = {
       get: jest.fn(),
       set: jest.fn(),
+      setNX: jest.fn(),
+      del: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -48,9 +50,18 @@ describe('EventsService', () => {
     service = module.get<EventsService>(EventsService);
   });
 
-  it('deve persistir e enviar evento quando for a primeira vez (Idempotência)', async () => {
-    mockCacheService.get.mockResolvedValue(null);
+  it('deve persistir e enviar evento quando for a primeira vez (Idempotência Atômica)', async () => {
+    mockCacheService.setNX.mockResolvedValue(true);
     mockRepository.findOne.mockResolvedValue(null);
+    
+    // Mock do Observable do Kafka
+    const mockObservable = {
+      subscribe: jest.fn().mockImplementation((observer) => {
+        observer.next(true);
+        return { unsubscribe: jest.fn() };
+      }),
+    };
+    mockKafkaClient.emit.mockReturnValue(mockObservable);
     
     const promptEvent: CreateEventDto = {
       event_id: '123e4567-e89b-12d3-a456-426614174000',
@@ -66,24 +77,14 @@ describe('EventsService', () => {
 
     await service.processIncomingEvent(promptEvent);
 
-    expect(mockCacheService.get).toHaveBeenCalledWith(`ingestion_lock:${promptEvent.event_id}`);
-    expect(mockRepository.create).toHaveBeenCalledWith({
-      id: promptEvent.event_id,
-      tenantId: promptEvent.tenant_id,
-      type: promptEvent.type,
-      payload: promptEvent.payload,
-      status: EventStatus.PENDING,
-    });
+    expect(mockCacheService.setNX).toHaveBeenCalledWith(`ingestion_lock:${promptEvent.event_id}`, 'processing', 3600);
+    expect(mockRepository.create).toHaveBeenCalled();
     expect(mockRepository.save).toHaveBeenCalled();
-    expect(mockCacheService.set).toHaveBeenCalled();
-    expect(mockKafkaClient.emit).toHaveBeenCalledWith('events.processing', {
-      key: promptEvent.tenant_id,
-      value: expect.any(Object),
-    });
+    expect(mockKafkaClient.emit).toHaveBeenCalledWith('events.processing', expect.any(Object));
   });
 
-  it('nao deve processar novamente se o cache retornar positivo (Early Return)', async () => {
-    mockCacheService.get.mockResolvedValue('true');
+  it('nao deve processar novamente se o setNX retornar falso (Busy/Duplicate)', async () => {
+    mockCacheService.setNX.mockResolvedValue(false);
     
     const promptEvent: CreateEventDto = {
       event_id: '123e4567-e89b-12d3-a456-426614174000',

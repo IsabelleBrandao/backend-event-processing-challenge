@@ -6,11 +6,6 @@ import { IntegrationEvent, EventStatus } from './entities/event.entity';
 import { CreateEventDto } from './dto/create-event.dto';
 import { CacheService } from '../cache/cache.service';
 
-/**
- * Serviço responsável por orquestrar a ingestão de eventos.
- * Implementa padrões anti-fragilidade como Idempotência baseada em Redis,
- * persistência garantida no PostgreSQL e desacoplamento do processamento via Kafka.
- */
 @Injectable()
 export class EventsService {
   private readonly logger = new Logger(EventsService.name);
@@ -18,67 +13,99 @@ export class EventsService {
   constructor(
     @InjectRepository(IntegrationEvent)
     private readonly eventsRepository: Repository<IntegrationEvent>,
-    @Inject('KAFKA_SERVICE') 
+    @Inject('KAFKA_SERVICE')
     private readonly kafkaClient: ClientKafka,
     private readonly cacheService: CacheService,
-  ) {}
+  ) { }
 
   /**
-   * Recebe um evento, protege contra duplicação e envia para processamento.
-   * A lógica de idempotência é distribuída (Cache-Aside Pattern).
+   * Processa a entrada de novos eventos garantindo a idempotência e persistência.
    */
   async processIncomingEvent(createEventDto: CreateEventDto): Promise<void> {
     const { event_id, tenant_id } = createEventDto;
     const cacheKey = `ingestion_lock:${event_id}`;
 
-    // Idempotência rápida via Redis (Previne "Double Spending" em cenários concorrentes de ingestão)
-    const alreadyReceived = await this.cacheService.get(cacheKey);
-    if (alreadyReceived) {
-      this.logger.warn(`[API] Evento duplicado ignorado (Cache): ${event_id}`);
-      return;
-    }
+    // Tenta criar uma trava no cache para evitar processamento duplicado
+    const isNewRequest = await this.cacheService.setNX(cacheKey, 'processing', 3600);
 
-    // Camada de Segurança Extra: Verifica no banco se o evento já existe e qual seu status
-    // Isso protege o sistema caso o Redis seja limpo ou a chave expire antes da hora
-    const existingEvent = await this.eventsRepository.findOne({ where: { id: event_id } });
-    if (existingEvent && existingEvent.status === EventStatus.PROCESSED) {
-      this.logger.warn(`[API] Evento já processado e finalizado (DB Check): ${event_id}`);
-      await this.cacheService.set(cacheKey, 'true', 3600); // Re-alimenta o cache por segurança
+    if (!isNewRequest) {
+      this.logger.warn(`[API] Requisição duplicada ou em curso: ${event_id}`);
       return;
     }
 
     try {
-      const newEvent = this.eventsRepository.create({
-        id: event_id,
-        tenantId: tenant_id,
-        type: createEventDto.type,
-        payload: createEventDto.payload,
-        status: EventStatus.PENDING,
-      });
-
-      await this.eventsRepository.save(newEvent); 
-      await this.cacheService.set(cacheKey, 'true', 3600); // 1 hora de retenção
-
-      const eventToMessage = { ...newEvent };
-
-      // Desacopla o processamento do request original usando um Message Broker
-      // A estrutura { key, value } é o padrão do NestJS para o Kafka (Partitioning por Key)
-      this.kafkaClient.emit('events.processing', {
-        key: tenant_id,
-        value: eventToMessage,
-      });
-
-      this.logger.log(`Evento ${event_id} persistido e enviado ao Kafka.`);
+      // Verifica se o evento já existe no banco (segurança extra caso o cache expire)
+      const existingEvent = await this.eventsRepository.findOne({ where: { id: event_id } });
       
+      let eventEntity = existingEvent;
+
+      if (existingEvent) {
+        if (existingEvent.status === EventStatus.PROCESSED) {
+          // Se já foi processado, atualizamos o cache e encerramos
+          await this.cacheService.set(cacheKey, 'PROCESSED', 86400);
+          return;
+        }
+        this.logger.log(`[API] Evento ${event_id} já existe no banco com status ${existingEvent.status}. Re-tentando envio.`);
+      } else {
+        // Se é um evento novo, cria e persiste
+        eventEntity = this.eventsRepository.create({
+          id: event_id,
+          tenantId: tenant_id,
+          type: createEventDto.type,
+          payload: createEventDto.payload,
+          status: EventStatus.PENDING,
+        });
+
+        try {
+          await this.eventsRepository.save(eventEntity);
+        } catch (dbError) {
+          // Se houver erro de chave duplicada aqui, significa que outra thread salvou primeiro
+          if (dbError.code === '23505') {
+            const reloadedEvent = await this.eventsRepository.findOne({ where: { id: event_id } });
+            if (reloadedEvent && reloadedEvent.status === EventStatus.PROCESSED) {
+              return;
+            }
+            eventEntity = reloadedEvent;
+          } else {
+            throw dbError;
+          }
+        }
+      }
+
+      // Envia para o Kafka e aguarda a confirmação de recebimento do broker
+      try {
+        await new Promise((resolve, reject) => {
+          this.kafkaClient.emit('events.processing', {
+            key: eventEntity.tenantId,
+            value: {
+              id: eventEntity.id,
+              tenant_id: eventEntity.tenantId,
+              payload: eventEntity.payload,
+              type: eventEntity.type,
+            }
+          }).subscribe({
+            next: () => resolve(true),
+            error: (err) => reject(err),
+          });
+        });
+
+        this.logger.log(`[API] Evento ${event_id} enviado para o broker.`);
+      } catch (kafkaError) {
+        // Se o broker falhar, o evento fica como PENDING para futura reconciliação
+        this.logger.error(`[API] Falha ao enviar para o broker: ${event_id}`);
+        throw kafkaError;
+      }
+
     } catch (error) {
-      if (error.code === '23505') return; // Segurança extra via DB
-      this.logger.error(`Erro ao processar evento ${event_id}:`, error.stack);
-      throw error; 
+      // Remove a trava do cache para permitir que o cliente tente enviar novamente
+      await this.cacheService.del(cacheKey);
+      this.logger.error(`[API] Erro ao processar evento ${event_id}`, error.stack);
+      throw error;
     }
   }
 
   /**
-   * Retorna contagem de eventos agrupados por status para dashboards.
+   * Retorna métricas consolidadas por status.
    */
   async getMetrics() {
     const rawData = await this.eventsRepository
@@ -95,7 +122,7 @@ export class EventsService {
   }
 
   /**
-   * Retorna a lista de eventos parados na DLQ para auditoria manual.
+   * Lista eventos que falharam e estão na DLQ para auditoria.
    */
   async getDLQEvents(page: number = 1, limit: number = 50) {
     const skip = (page - 1) * limit;

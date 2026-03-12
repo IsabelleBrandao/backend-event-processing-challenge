@@ -13,7 +13,7 @@ Além dos requisitos obrigatórios, este projeto inclui:
 * **Rate Limiting:** Proteção contra ataques de força bruta/DDoS (limite de requisições por IP).
 * **Dead Letter Queue (DLQ):** Mensagens do Kafka que falham no processamento não são perdidas, garantindo observabilidade.
 * **Deadlock Prevention:** Ordenação determinística de recursos antes do travamento no banco.
-* **Idempotência:** Garantia via Redis e Database (Unique Constraint) de que um evento nunca seja processado mais de uma vez.
+* **Idempotência e Autorrecuperação:** Garantia via Redis e Database de que um evento nunca seja processado mais de uma vez. O sistema detecta automaticamente eventos que falharam no envio inicial e permite a re-tentativa de despacho para o Broker sem duplicar registros.
 * **Swagger/OpenAPI:** Documentação automática da API.
 * **Testes E2E:** Validação de fluxos completos de ponta a ponta.
 
@@ -44,9 +44,9 @@ O sistema adota uma **Arquitetura Híbrida em Camadas**, permitindo que a mesma 
 **Cenário:** O evento não deve travar toda a fila do Kafka, mas também não pode sumir.
 **Solução:** Após o limite de retentativas (5), enviamos o evento a um tópico `events.dlq` exclusivo, registrando o problema para análise separada.
 
-### 3. Padrão Cache-Aside de Idempotência
-**Desafio:** O mesmo evento sendo submetido múltiplas vezes.
-**Solução:** Garantia via Redis (para throughput em memória rápido) e via Database (Constraint de Unique) para que o processamento do evento seja executado apenas uma vez.
+### 3. Idempotência em Duas Camadas
+*   **Na Ingestão:** Bloqueio instantâneo via Redis SET NX para evitar múltiplas gravações do mesmo `event_id`.
+*   **No Processamento (Worker):** Trava de exclusão mútua distribuída (`PROCESSING lock`). Isso garante que, mesmo em cenários de reequilíbrio de partições do Kafka, apenas um worker execute a integração externa por vez (evitando Race Conditions).
 
 ---
 
@@ -110,6 +110,18 @@ Após o término do script de carga, acesse os endpoints de monitoramento:
     *   Verifique o agrupamento por status (`PROCESSED`, `DLQ`).
 *   **Auditoria de DLQ:** `http://localhost:3000/events/dlq`
     *   Visualize os eventos que excederam as 5 tentativas de processamento (injetados propositalmente pelo script para validação do circuito de erro).
+
+---
+
+---
+
+## Production Readiness e Melhorias Futuras
+
+Este projeto foi desenvolvido com foco em alta escalabilidade, mas para um ambiente de produção real, as seguintes práticas seriam adotadas:
+
+1. **Schema Migrations:** O uso de `synchronize: true` no TypeORM foi utilizado para agilidade no teste técnico. Em produção, utilizaríamos **Migrations** para garantir o controle de versão do esquema do banco de dados e evitar perda de dados acidental.
+2. **Transactional Outbox & Relay:** Para garantir 100% de consistência atômica entre o Banco de Dados e o Kafka, o próximo passo seria o uso de um Relay para monitorar a tabela de eventos. A estrutura atual já está preparada para isso, pois persiste o estado `PENDING` antes do despacho, permitindo a recuperação de falhas de comunicação com o Broker sem intervenção manual.
+3. **Locks Distribuídos:** A idempotência atual utiliza **Atomic SET NX** no Redis, o que é o estado da arte para travas distribuídas, prevenindo *Race Conditions* em ambientes com múltiplas instâncias da API.
 
 ---
 

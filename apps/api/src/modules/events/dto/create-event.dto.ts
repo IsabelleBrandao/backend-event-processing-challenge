@@ -4,7 +4,7 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class EcommercePayloadDto {
   @ApiProperty({ example: '74738ff5-5367-4633-9121-510075d045c4', description: 'Referência única da transação no sistema de origem (UUID v4)' })
-  @IsUUID('all')
+  @IsString()
   @IsNotEmpty()
   ref!: string;
 
@@ -40,8 +40,8 @@ export class CreateEventDto {
   @IsNotEmpty()
   type!: string;
 
-  @ApiProperty({ 
-    type: () => EcommercePayloadDto, 
+  @ApiProperty({
+    type: () => EcommercePayloadDto,
     description: 'Dados específicos do evento',
     example: {
       ref: '74738ff5-5367-4633-9121-510075d045c4',

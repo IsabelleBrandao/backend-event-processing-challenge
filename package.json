@@ -9,7 +9,7 @@
   "scripts": {
     "start:dev": "npm run start:dev -w @nexly-challenge/api",
     "api:dev": "npm run dev -w @nexly-challenge/api",
-    "generate-events": "npm run generate-events -w @nexly-challenge/scripts"
+    "generate-events": "npx -y tsx scripts/generate-events.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
